@@ -1,7 +1,7 @@
 /***********************************************
  * Project 2: Shell
  * 
- * Group Number : 10
+ * Group Number : 18
  * Students     : Bryan Pax, Valentin Libouton
  * 
  * Please add details if compilation of your project is not
