@@ -14,15 +14,37 @@
 
 const char *error_message = "An error has occured\n";
 
+int parse_command(char *command, char *args[], int max_args) {
+    int argc = 0;
+    char *token = strtok(command, " ");
+    //TODO pour valentin
+
+    return argc;
+}
+
 void interactive_mode(FILE *input) {
     // Mode interactif : umonsh>
-    char *buffer = NULL;
-    size_t size = 0;
+    char *command = NULL;
+    size_t command_size = 0;
+
     // Ce qui suit devra être dans une boucle infinie ...
     printf("umonsh> ");
-    if (getline(&buffer, &size, stdin) == -1) {
+    if (getline(&command, &command_size, stdin) == -1) {
         //break; // EOF ou erreur ...
+        exit(0);
     }
+
+    command[strcspn(command, "\n")] = '\0'; // supression du \n
+    printf("%s - %ld octets", command, command_size);
+
+    if (strcmp(command, "exit") == 0) { // quitter le shell
+        printf("Sortie du shell Umonsh");
+        exit(0);
+    }
+
+
+
+    
 }
 
 int main(int argc, char *argv[]) {
