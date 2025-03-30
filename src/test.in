@@ -1,0 +1,6 @@
+path /bin
+echo Hello
+ls > list.txt
+cd /
+pwd
+exit
