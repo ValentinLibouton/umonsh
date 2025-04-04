@@ -21,7 +21,7 @@
 char *path_dirs[MAX_PATHS];
 int path_count = 0;
 
-const char *error_message = "An error has occured\n";
+const char *error_message = "An error has occurred\n";
 
 /* === Fonctions indépendantes === */
 
@@ -37,6 +37,26 @@ int parse_command(char *command, char *args[], int max_args) {
     return argc;
 }
 
+char* normalize_line(const char* input) {
+    size_t len = strlen(input);
+    char* output = malloc(3 * len + 1); // au cas où chaque caractère serait spécial
+    if (!output) return NULL;
+
+    int j = 0;
+    for (size_t i = 0; i < len; ++i) {
+        if (input[i] == '>' || input[i] == '&') {
+            output[j++] = ' ';
+            output[j++] = input[i];
+            output[j++] = ' ';
+        } else {
+            output[j++] = input[i];
+        }
+    }
+    output[j] = '\0';
+    return output;
+}
+
+
 
 /* === Fonctions partiellement indépendantes (usage de var globales) === */
 
@@ -47,37 +67,57 @@ void cleanup_paths() {
 }
 
 int handle_redirection(char *args[]) {
-    int i = 0;
-    while (args[i] != NULL) {
+    int redir_index = -1;
+    int redir_count = 0;
+
+    // 1. Rechercher et compter les ">"
+    for (int i = 0; args[i] != NULL; i++) {
         if (strcmp(args[i], ">") == 0) {
-            // Check si un nom de fichier suit
-            if (args[i+1] == NULL || args[i+2] != NULL) {
-                // Mauvaise syntaxe
-                write(STDERR_FILENO, error_message, strlen(error_message));
-                return -1;
-            }
-
-            // Ouvrir le fichier
-            int fd = open(args[i+1], O_WRONLY | O_CREAT | O_TRUNC, 0666);
-            if (fd < 0) {
-                write(STDERR_FILENO, error_message, strlen(error_message));
-                return -1;
-            }
-
-            // Rediriger stdout et stderr
-            dup2(fd, STDOUT_FILENO);
-            dup2(fd, STDERR_FILENO);
-            close(fd);
-
-            // Couper la commande (pour execv)
-            args[i] = NULL;
-            return 0;
+            redir_index = i;
+            redir_count++;
         }
-        i++;
     }
 
-    return 0;  // Pas de redirection
+    // 2. Vérifier qu’il n’y a **qu’un seul** ">"
+    if (redir_count > 1) {
+        write(STDERR_FILENO, error_message, strlen(error_message));
+        return -1;
+    }
+
+    // 3. Vérifier les erreurs de syntaxe si un ">" est trouvé
+    if (redir_count == 1) {
+        // (a) ">" ne peut pas être en position 0 (ex: "> file")
+        if (redir_index == 0) {
+            write(STDERR_FILENO, error_message, strlen(error_message));
+            return -1;
+        }
+
+        // (b) Il doit y avoir **un seul** argument après ">"
+        if (args[redir_index + 1] == NULL || args[redir_index + 2] != NULL) {
+            write(STDERR_FILENO, error_message, strlen(error_message));
+            return -1;
+        }
+
+        // 4. Ouvrir le fichier de redirection
+        int fd = open(args[redir_index + 1], O_WRONLY | O_CREAT | O_TRUNC, 0666);
+        if (fd < 0) {
+            write(STDERR_FILENO, error_message, strlen(error_message));
+            return -1;
+        }
+
+        // 5. Rediriger stdout et stderr vers le fichier
+        dup2(fd, STDOUT_FILENO);
+        dup2(fd, STDERR_FILENO);
+        close(fd);
+
+        // 6. Couper la commande pour execv (ne garder que la partie avant ">")
+        args[redir_index] = NULL;
+    }
+
+    return 0; // OK
 }
+
+
 
 /* === Fonctions dépendantes (usage de fonctions du projet) === */
 
@@ -192,24 +232,33 @@ void shell_mode(FILE *input, int is_interactive) {
         }
 
         command[strcspn(command, "\n")] = '\0'; // supression du \n
+
+        char *normalized = normalize_line(command);
+        if (!normalized) {
+            write(STDERR_FILENO, error_message, strlen(error_message));
+            continue;
+        }
+
+        if (strchr(normalized, '&') != NULL) {
+            char *command_copy = strdup(normalized);
+            if (!command_copy) {
+                write(STDERR_FILENO, error_message, strlen(error_message));
+                free(normalized);
+                continue;
+            }
+            handle_parallel(command_copy);
+            free(command_copy);
+            free(normalized);
+            continue;
+        }
+
+        char *args[100];
+        int argc = parse_command(normalized, args, 100);
     
         if (VERBOSE) {
             printf("[Verbose mode=1] Command: %s - Allocated %ld octets, Used %ld chars\n", command, command_size, strlen(command));
         }
 
-        if (strchr(command, '&') != NULL) {
-            char *command_copy = strdup(command);
-            if (command_copy == NULL) {
-                write(STDERR_FILENO, error_message, strlen(error_message));
-                continue;
-            }
-            handle_parallel(command_copy);
-            free(command_copy);
-            continue;
-        }
-
-        char *args[100];
-        int argc = parse_command(command, args, 100);
 
         // Refuser la redirection sur les commandes internes: cd, exit, path
         for (int i = 0; args[i] != NULL; i++) {
@@ -225,9 +274,13 @@ void shell_mode(FILE *input, int is_interactive) {
         }
 
         if (strcmp(args[0], "exit") == 0) {
+            if (argc != 1) {
+               write(STDERR_FILENO, error_message, strlen(error_message));
+                continue;
+            }
             free(command);
             cleanup_paths();
-            printf("Sortie du shell Umonsh\n");
+            //printf("Sortie du shell Umonsh\n");
             exit(0);
         } else if (strcmp(args[0], "cd") == 0) {
             if (argc != 2) {
@@ -266,7 +319,8 @@ void shell_mode(FILE *input, int is_interactive) {
 
 
 
-         execute_command(args);    
+         execute_command(args);
+         free(normalized);    
     }
 }
 
