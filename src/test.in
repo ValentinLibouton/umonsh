@@ -1,6 +1,7 @@
 path /bin
 echo Hello
 ls > list.txt
-cd /
+echo coucou & echo tout le monde
+cd /usr
 pwd
 exit

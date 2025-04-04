@@ -177,13 +177,15 @@ void execute_command(char *args[]) {
 }
 
 
-void interactive_mode(FILE *input) {
-    // Mode interactif : umonsh>
+void shell_mode(FILE *input, int is_interactive) {
     char *command = NULL;
     size_t command_size = 0;
     while(1) {
-        printf("umonsh> ");
-        if (getline(&command, &command_size, stdin) == -1) {
+        if (is_interactive) {
+            printf("umonsh> ");
+        }
+        
+        if (getline(&command, &command_size, input) == -1) {
             free(command);
             cleanup_paths();
             exit(0);
@@ -273,14 +275,17 @@ int main(int argc, char *argv[]) {
     path_count = 1;
     if (argc == 1) {
         // Mode interactif
-        interactive_mode(stdin);
+        shell_mode(stdin, 1);
     } else if (argc == 2) {
         // Mode batch
-        // A développer plus tard... (pas maintenant)
-    } else {
-        write(STDERR_FILENO, error_message, strlen(error_message));
-        cleanup_paths();
-        exit(1);
+        FILE *file = fopen(argv[1], "r");
+        if (file == NULL) {
+            write(STDERR_FILENO, error_message, strlen(error_message));
+            cleanup_paths();
+            exit(1);
+        }
+        shell_mode(file, 0);
+        fclose(file);
     }
     cleanup_paths();
     return 0;
