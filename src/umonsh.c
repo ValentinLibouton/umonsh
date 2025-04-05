@@ -56,6 +56,12 @@ char* normalize_line(const char* input) {
     return output;
 }
 
+int is_file_empty(FILE *file) {
+    fseek(file, 0, SEEK_END);
+    long size = ftell(file);
+    rewind(file);  // Important pour permettre la lecture après
+    return size == 0;
+}
 
 
 /* === Fonctions partiellement indépendantes (usage de var globales) === */
@@ -309,16 +315,12 @@ void shell_mode(FILE *input, int is_interactive) {
             }
             continue;
         }
-        
         if (VERBOSE) {
             //printf("Commande : %s\n", args[0]);
             for (int i = 1; i < argc; i++) {
                 printf("Arg %d : %s\n", i, args[i]);
             }    
         }
-
-
-
          execute_command(args);
          free(normalized);    
     }
@@ -327,20 +329,27 @@ void shell_mode(FILE *input, int is_interactive) {
 int main(int argc, char *argv[]) {
     path_dirs[0] = strdup("/bin");
     path_count = 1;
+
     if (argc == 1) {
         // Mode interactif
         shell_mode(stdin, 1);
+        cleanup_paths();
+        return 0;
     } else if (argc == 2) {
         // Mode batch
         FILE *file = fopen(argv[1], "r");
-        if (file == NULL) {
+        if (file == NULL || is_file_empty(file)) {
             write(STDERR_FILENO, error_message, strlen(error_message));
+            if (file) fclose(file);
             cleanup_paths();
-            exit(1);
+            return 1;
         }
         shell_mode(file, 0);
         fclose(file);
+        
+    } else {
+        write(STDERR_FILENO, error_message, strlen(error_message));
+        cleanup_paths();
+        return 1;
     }
-    cleanup_paths();
-    return 0;
 }
