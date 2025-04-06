@@ -1,12 +1,67 @@
 /***********************************************
  * Project 2: Shell
  * 
- * Group Number : 18
- * Students     : Bryan Pax, Valentin Libouton
+ * Group Number: 18
+ * Students: Bryan Pax, Valentin Libouton
  * 
- * Please add details if compilation of your project is not
- * straightforward (for instance, if you use multiple files).
+ * Organisation du code
+ * --------------------
+ * Ce fichier contient l’implémentation du shell (umonsh). Nous utilisons un 
+ * module externe string_split_utils (string_split_utils.h / string_split_utils.c)
+ * pour gérer le découpage avancé des lignes de commande :
+ * 
+ *  - parse_line_advanced(const char *input) : 
+ *      Parse une ligne en la découpant sur les espaces ET en isolant les symboles
+ *      spéciaux '>' et '&' comme des tokens indépendants.
+ *      Exemple : "ls>fichier" devient ["ls", ">", "fichier"].
+ *  - make_string_split, free_split, add_to_split : 
+ *      Fonctions utilitaires pour gérer la structure string_split,
+ *      qui contient un tableau de tokens (terminé par NULL) et le nombre de tokens.
+ * 
+ * 1) Includes et définitions globales
+ *    - #include <...> : bibliothèques standard
+ *    - #include "string_split_utils.h" : permet d’accéder à parse_line_advanced
+ *    - #define DEBUG : pour activer/désactiver les logs de debug
+ *    - char *path_dirs[MAX_PATHS], int path_count : variables globales pour le PATH
+ *    - const char *error_message : message d’erreur standard
+ * 
+ * 2) Fonctions utilitaires indépendantes
+ *    - is_file_empty(FILE *file) : détecte un fichier vide
+ *    - cleanup_paths() : libère les chemins de path_dirs
+ * 
+ * 3) Fonctions liées à la redirection et à l’exécution
+ *    - handle_redirection(args) : recherche '>' et applique dup2
+ *    - execute_external(args) : fork + execv + redirection
+ * 
+ * 4) Fonctions de logique Shell
+ *    - handle_builtin(...) : gère cd, exit, path
+ *    - handle_single_command(...) : parse la commande via parse_line_advanced,
+ *      vérifie si c’est un builtin, sinon exécute en externe
+ *    - handle_parallel(...) : découpe la ligne sur '&', exécute chaque sous-commande
+ * 
+ * 5) shell_mode(FILE *input, bool is_interactive)
+ *    - Boucle de lecture de commandes, détecte '&' => handle_parallel
+ *    - Sinon => handle_single_command
+ * 
+ * 6) main(...) 
+ *    - Gère le mode interactif ou batch selon argc/argv, initialise path,
+ *      lance shell_mode.
+ * 
+ * Compilation
+ * -----------
+ *    gcc umonsh.c string_split_utils.c -o umonsh -Wall
+ * 
+ * Utilisation
+ * -----------
+ *    ./umonsh             (mode interactif)
+ *    ./umonsh <fichier>   (mode batch)
+ * 
+ * Débogage
+ * --------
+ *    - Pour activer le debug, définir #define DEBUG 1 au début du fichier.
+ *    - Des logs sur stderr décrivent pas à pas le comportement.
  ***********************************************/
+
 #include <unistd.h>
 #include <string.h>
 #include <stdio.h>
