@@ -5,4 +5,4 @@ if ! [[ -x umonsh ]]; then
     exit 1
 fi
 
-./run-tests.sh -c $*
+./run-tests.sh -c -v $*

@@ -13,7 +13,9 @@
 #include <stdlib.h>
 #include <sys/wait.h>
 #include <fcntl.h>  // pour open()
+#include <stdbool.h>
 
+#include "string_split_utils.h"
 
 #define MAX_PATHS 100
 #define VERBOSE 0
@@ -24,37 +26,6 @@ int path_count = 0;
 const char *error_message = "An error has occurred\n";
 
 /* === Fonctions indépendantes === */
-
-int parse_command(char *command, char *args[], int max_args) {
-    int argc = 0;
-    char *token = strtok(command, " \t"); //Commencer à découper la chaîne 'command'
-    
-    while (token != NULL && argc < max_args -1) {
-        args[argc++] = token;
-        token = strtok(NULL, " \t"); // Continuer à découper le reste de 'command'
-    }
-    args[argc] = NULL;
-    return argc;
-}
-
-char* normalize_line(const char* input) {
-    size_t len = strlen(input);
-    char* output = malloc(3 * len + 1); // au cas où chaque caractère serait spécial
-    if (!output) return NULL;
-
-    int j = 0;
-    for (size_t i = 0; i < len; ++i) {
-        if (input[i] == '>' || input[i] == '&') {
-            output[j++] = ' ';
-            output[j++] = input[i];
-            output[j++] = ' ';
-        } else {
-            output[j++] = input[i];
-        }
-    }
-    output[j] = '\0';
-    return output;
-}
 
 int is_file_empty(FILE *file) {
     fseek(file, 0, SEEK_END);
@@ -69,9 +40,16 @@ int is_file_empty(FILE *file) {
 void cleanup_paths() {
     for (int i = 0; i < path_count; i++) {
         free(path_dirs[i]);
+        path_dirs[i] = NULL; 
     }
+    path_count = 0;
 }
 
+/* 
+    Vérifie s’il y a une redirection ">" unique dans args.
+    Si oui, on redirige stdout et stderr vers le fichier, puis on tronque args à ">".
+    Renvoie -1 en cas d’erreur; 0 sinon.
+*/
 int handle_redirection(char *args[]) {
     int redir_index = -1;
     int redir_count = 0;
@@ -84,49 +62,56 @@ int handle_redirection(char *args[]) {
         }
     }
 
-    // 2. Vérifier qu’il n’y a **qu’un seul** ">"
+    // 2. Vérifier qu’il n’y a qu’un seul ">"
     if (redir_count > 1) {
         write(STDERR_FILENO, error_message, strlen(error_message));
         return -1;
     }
 
-    // 3. Vérifier les erreurs de syntaxe si un ">" est trouvé
-    if (redir_count == 1) {
-        // (a) ">" ne peut pas être en position 0 (ex: "> file")
-        if (redir_index == 0) {
-            write(STDERR_FILENO, error_message, strlen(error_message));
-            return -1;
-        }
-
-        // (b) Il doit y avoir **un seul** argument après ">"
-        if (args[redir_index + 1] == NULL || args[redir_index + 2] != NULL) {
-            write(STDERR_FILENO, error_message, strlen(error_message));
-            return -1;
-        }
-
-        // 4. Ouvrir le fichier de redirection
-        int fd = open(args[redir_index + 1], O_WRONLY | O_CREAT | O_TRUNC, 0666);
-        if (fd < 0) {
-            write(STDERR_FILENO, error_message, strlen(error_message));
-            return -1;
-        }
-
-        // 5. Rediriger stdout et stderr vers le fichier
-        dup2(fd, STDOUT_FILENO);
-        dup2(fd, STDERR_FILENO);
-        close(fd);
-
-        // 6. Couper la commande pour execv (ne garder que la partie avant ">")
-        args[redir_index] = NULL;
+    // 3. S’il n’y a pas de ">", rien à faire
+    if (redir_count == 0) {
+        return 0;
     }
 
-    return 0; // OK
+    // S’il y en a un seul:
+    // (a) Ne peut pas être le premier token
+    if (redir_index == 0) {
+        write(STDERR_FILENO, error_message, strlen(error_message));
+        return -1;
+    }
+
+    // (b) Doit y avoir exactement un token après
+    if (args[redir_index + 1] == NULL || args[redir_index + 2] != NULL) {
+        write(STDERR_FILENO, error_message, strlen(error_message));
+        return -1;
+    }
+
+    // Ouvrir le fichier de redirection
+    int fd = open(args[redir_index + 1], O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (fd < 0) {
+        write(STDERR_FILENO, error_message, strlen(error_message));
+        return -1;
+    }
+
+    // Rediriger stdout et stderr
+    dup2(fd, STDOUT_FILENO);
+    dup2(fd, STDERR_FILENO);
+    close(fd);
+
+    // Tronquer la commande pour execv (on coupe au ">"…)
+    args[redir_index] = NULL;
+
+    return 0;
 }
 
 
 
 /* === Fonctions dépendantes (usage de fonctions du projet) === */
 
+/* 
+    Exécute une suite de commandes séparées par `&` en parallèle.
+    Ensuite, attend que tous les enfants terminent.
+*/
 void handle_parallel(char *line) {
     char *saveptr;
     char *sub_cmd = strtok_r(line, "&", &saveptr);
@@ -143,18 +128,23 @@ void handle_parallel(char *line) {
             continue;
         }
 
-        // Parser les arguments
-        char *args[100];
-        int argc = parse_command(sub_cmd, args, 100);
+        // Découpage via string_split_utils
+        struct string_split *parsed = parse_line_advanced(sub_cmd);
+        char **args = parsed->parts;
+        int argc = parsed->length;
 
         if (argc == 0) {
+            free_split(parsed);
             sub_cmd = strtok_r(NULL, "&", &saveptr);
             continue;
         }
 
         // Interdiction des commandes internes en parallèle
-        if (strcmp(args[0], "cd") == 0 || strcmp(args[0], "exit") == 0 || strcmp(args[0], "path") == 0) {
+        if (strcmp(args[0], "cd") == 0 ||
+            strcmp(args[0], "exit") == 0 ||
+            strcmp(args[0], "path") == 0) {
             write(STDERR_FILENO, error_message, strlen(error_message));
+            free_split(parsed);
             sub_cmd = strtok_r(NULL, "&", &saveptr);
             continue;
         }
@@ -162,24 +152,32 @@ void handle_parallel(char *line) {
         pid_t pid = fork();
         if (pid == 0) {
             // Enfant
-            if (handle_redirection(args) == -1) exit(1);
+            if (handle_redirection(args) == -1) {
+                //free_split(parsed);
+                exit(1);
+            }
 
+            // Tester chaque répertoire du path
             char path[256];
             for (int i = 0; i < path_count; i++) {
                 snprintf(path, sizeof(path), "%s/%s", path_dirs[i], args[0]);
                 if (access(path, X_OK) == 0) {
                     execv(path, args);
+                    // Si execv réussit, on ne revient pas ici
                 }
             }
+            // Si on arrive là, échec...
             write(STDERR_FILENO, error_message, strlen(error_message));
+            //free_split(parsed);
             exit(1);
         } else if (pid > 0) {
             // Parent
             pids[pid_count++] = pid;
         } else {
+            // Erreur fork
             write(STDERR_FILENO, error_message, strlen(error_message));
         }
-
+        free_split(parsed);
         sub_cmd = strtok_r(NULL, "&", &saveptr);
     }
 
@@ -189,6 +187,10 @@ void handle_parallel(char *line) {
     }
 }
 
+/* 
+    Exécute une commande externe (pas cd/path/exit).
+    Gère la redirection avant d’appeler execv.
+*/
 void execute_command(char *args[]) {
     pid_t pid = fork();
     if (pid == 0) {
@@ -237,58 +239,86 @@ void shell_mode(FILE *input, int is_interactive) {
             exit(0);
         }
 
+        // Supprimer le \n final
         command[strcspn(command, "\n")] = '\0'; // supression du \n
 
-        char *normalized = normalize_line(command);
-        if (!normalized) {
-            write(STDERR_FILENO, error_message, strlen(error_message));
-            continue;
-        }
-
-        if (strchr(normalized, '&') != NULL) {
-            char *command_copy = strdup(normalized);
+        
+        // Vérifier si on a du parallélisme :
+        if (VERBOSE) printf("[Debug] Vérifier si on a du parallélisme. Usage de:'&'\n");
+        if (strchr(command, '&') != NULL) {
+            // On gère TOUT en parallèle
+            char *command_copy = strdup(command);
             if (!command_copy) {
                 write(STDERR_FILENO, error_message, strlen(error_message));
-                free(normalized);
                 continue;
             }
             handle_parallel(command_copy);
             free(command_copy);
-            free(normalized);
             continue;
         }
 
-        char *args[100];
-        int argc = parse_command(normalized, args, 100);
+        // Sinon, on gère une commande simple
+
+        // Découper la ligne en tokens
+        if (VERBOSE) printf("[Debug] Découper la ligne en tokens\n");
+        struct string_split *parsed = parse_line_advanced(command);
+        char **args = parsed->parts;
+        int argc = parsed->length;
     
-        if (VERBOSE) {
-            printf("[Verbose mode=1] Command: %s - Allocated %ld octets, Used %ld chars\n", command, command_size, strlen(command));
-        }
-
-
-        // Refuser la redirection sur les commandes internes: cd, exit, path
-        for (int i = 0; args[i] != NULL; i++) {
-            if (strcmp(args[i], ">") == 0 &&
-                (strcmp(args[0], "cd") == 0 || strcmp(args[0], "exit") == 0 || strcmp(args[0], "path") == 0)) {
-                write(STDERR_FILENO, error_message, strlen(error_message));
-                continue;
-            }
-        }
+        if (VERBOSE) printf("[Debug] Command: %s - Allocated %ld octets, Used %ld chars\n", command, command_size, strlen(command));
 
         if (argc == 0) {
+            if (VERBOSE) printf("[Debug] Ligne vide, on repart dans la boucle\n");
+            free_split(parsed);
             continue;  // Ligne vide, on repart dans la boucle
         }
 
+        /*TODO les quelques ligne ci-dessous, je veux essayer de les supprimer...*/
+        // Vérifier si la commande interne n’a pas de redirection
+        // On peut faire un mini-scan ici, ou plus simplement:
+        // Si on détecte ">" ET c’est un builtin => erreur
+        if (VERBOSE) printf("[Debug] Vérifier si la commande interne n’a pas de redirection. Usage de:'>'\n");
+        bool invalid_cmd = false;
+        for (int i = 0; args[i] != NULL; i++) {
+            if (VERBOSE) printf("[Debug] %s ?= > \n",args[i]);
+            if (strcmp(args[i], ">") == 0 &&
+                (strcmp(args[0], "cd") == 0 ||
+                    strcmp(args[0], "exit") == 0 ||
+                    strcmp(args[0], "path") == 0)) {
+                if (VERBOSE) printf("[Debug] L'usage de la redirection '>' a été détectée avec une commande interdite %s\n", args[0]);
+                write(STDERR_FILENO, error_message, strlen(error_message));
+                invalid_cmd = true;
+                break;
+            }
+        }
+        if (invalid_cmd) {
+            if (VERBOSE) printf("[Debug] Commande invalide\n");
+            free_split(parsed);
+            continue;
+        }
+
+
+        
+
+        // Gestion des commandes internes
+
+        // 1) exit
         if (strcmp(args[0], "exit") == 0) {
             if (argc != 1) {
                write(STDERR_FILENO, error_message, strlen(error_message));
+               free_split(parsed);
                 continue;
             }
+            free_split(parsed);
             free(command);
             cleanup_paths();
             //printf("Sortie du shell Umonsh\n");
             exit(0);
-        } else if (strcmp(args[0], "cd") == 0) {
+        }
+
+        // 2) cd
+        else if (strcmp(args[0], "cd") == 0) {
+            if (VERBOSE) printf("[Debug] Commande cd\n");
             if (argc != 2) {
                 write(STDERR_FILENO, error_message, strlen(error_message));
             } else {
@@ -296,33 +326,35 @@ void shell_mode(FILE *input, int is_interactive) {
                     write(STDERR_FILENO, error_message, strlen(error_message));
                 }
             }
+            free_split(parsed);
             continue;
 
-        } else if (strcmp(args[0], "path") == 0) {
-            // Libérer les anciens chemins
-            for (int i = 0; i < path_count; i++) {
-                free(path_dirs[i]);
-            }
+        }
 
-            // Réinitialiser le path
-            path_count = 0;
-
+        // 3) path
+        else if (strcmp(args[0], "path") == 0) {
+            // Nettoyer l’ancien path
+            cleanup_paths();
             // Ajouter les nouveaux chemins
-            for (int i = 1; i < argc;i++) {
+            for (int i = 1; i < argc; i++) {
                 if (path_count < MAX_PATHS) {
                     path_dirs[path_count++] = strdup(args[i]);
                 }
             }
+            free_split(parsed);
             continue;
         }
+
         if (VERBOSE) {
             //printf("Commande : %s\n", args[0]);
             for (int i = 1; i < argc; i++) {
                 printf("Arg %d : %s\n", i, args[i]);
             }    
         }
+
+        // Si on arrive ici, c’est une commande externe
          execute_command(args);
-         free(normalized);    
+         free_split(parsed);
     }
 }
 
@@ -335,7 +367,9 @@ int main(int argc, char *argv[]) {
         shell_mode(stdin, 1);
         cleanup_paths();
         return 0;
-    } else if (argc == 2) {
+    }
+
+    else if (argc == 2) {
         // Mode batch
         FILE *file = fopen(argv[1], "r");
         if (file == NULL || is_file_empty(file)) {
@@ -346,8 +380,11 @@ int main(int argc, char *argv[]) {
         }
         shell_mode(file, 0);
         fclose(file);
+        cleanup_paths();
+        return 0;
         
-    } else {
+    }
+    else {
         write(STDERR_FILENO, error_message, strlen(error_message));
         cleanup_paths();
         return 1;
