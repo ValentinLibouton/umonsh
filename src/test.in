@@ -1,7 +1,0 @@
-path /bin
-echo Hello
-ls > list.txt
-echo coucou & echo tout le monde
-cd /usr
-pwd
-exit
